@@ -49,7 +49,9 @@ export default function Home() {
       <div className="grid grid-2" style={{marginTop: 24}}>
         <section>
           <h1>Vind je nieuwe woning <span className="muted">vóórdat anderen 'm zien.</span></h1>
-          <p className="muted" style={{marginTop: 8}}>Gecontroleerde, actuele huuradvertenties en real‑time notificaties — geen verouderde links, geen rommel. Eén helder abonnement, alles geregeld.</p>
+          <p className="muted" style={{marginTop: 8}}>
+            Huurkans verzamelt gecontroleerde, actuele huuradvertenties en stuurt real-time notificaties — geen verouderde links, geen rommel. Eén helder abonnement, alles geregeld.
+          </p>
 
           <ul style={{marginTop: 16}}>
             <li><strong>Actueel</strong> — listings die écht beschikbaar zijn.</li>
@@ -71,7 +73,9 @@ export default function Home() {
                 {loading ? 'Even geduld…' : `Abonneer — ${price}`}
               </button>
             </div>
-            <div className="small muted" style={{marginTop: 8}}>Je kunt op elk moment opzeggen. Beveiligde betaling via Stripe.</div>
+            <div className="small muted" style={{marginTop: 8}}>
+              Je kunt op elk moment opzeggen. Beveiligde betaling via Stripe.
+            </div>
           </form>
 
           {session ? (
