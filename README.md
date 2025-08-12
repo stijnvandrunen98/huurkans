@@ -1,3 +1,6 @@
+update test
+
+
 # Huurkans (Next.js + Supabase Auth + Stripe) — MVP 2.0
 
 Dit project bevat:
