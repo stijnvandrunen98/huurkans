@@ -1,38 +1,42 @@
-# Huurkans - MVP (Next.js + Tailwind + Stripe Checkout)
+# Huurkans (Next.js + Supabase Auth + Stripe) — MVP 2.0
 
-Dit is een kant-en-klaar Next.js project (MVP) voor *Huurkans* — een minimalistische landingspagina met Stripe Checkout (abonnement €14,99 p/m).
+Dit project bevat:
+- Inloggen/registreren met NextAuth (Credentials) en Supabase
+- Minimalistische UI met oranje accent
+- Stripe Checkout (abonnement €14,99 p/m) met success/cancel pagina's
+- Voorbeeld SQL om de `users`-tabel in Supabase aan te maken
 
-## Inhoud
-- Next.js frontend (pages/)
-- API route voor het aanmaken van een Stripe Checkout sessie (pages/api/create-checkout-session.js)
-- TailwindCSS setup
-- Simpele instructies om te deployen op Vercel
+## Environment variables (Vercel → Project → Settings → Environment Variables)
+- NEXT_PUBLIC_SUPABASE_URL = https://<project>.supabase.co
+- NEXT_PUBLIC_SUPABASE_ANON_KEY = <anon public key>
+- SUPABASE_SERVICE_ROLE_KEY = <service_role key>  (alleen server-side gebruikt)
+- NEXTAUTH_SECRET = <random string>
+- NEXTAUTH_URL = https://huurkans.vercel.app (of jouw domein)
+- NEXT_PUBLIC_BASE_URL = https://huurkans.vercel.app (of jouw domein)
+- NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY = pk_test_xxx
+- STRIPE_SECRET_KEY = sk_test_xxx
 
-## Snel starten (lokaal)
-1. Pak de ZIP uit
-2. `npm install`
-3. Zet environment variables (voorbeeld hieronder) in een `.env.local` bestand:
-   ```
-   NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_xxx
-   STRIPE_SECRET_KEY=sk_test_xxx
-   NEXT_PUBLIC_BASE_URL=http://localhost:3000
-   ```
-4. `npm run dev` en open http://localhost:3000
+## Supabase SQL (maak de users-tabel)
+Ga in Supabase naar SQL editor en voer uit:
 
-## Deploy naar Vercel (5 minuten)
-1. Maak een account op vercel.com
-2. Klik op "New Project" → import from ZIP (of connect Github en push deze map)
-3. Voeg de environment variables toe in Vercel project settings (zelfde keys als hierboven)
-4. Deploy — de site is dan live.
+```sql
+create extension if not exists pgcrypto;
+create table if not exists users (
+  id uuid primary key default gen_random_uuid(),
+  email text unique not null,
+  password_hash text not null,
+  created_at timestamptz default now()
+);
+-- (Optioneel) RLS aanzetten en beleid toevoegen, service_role key omzeilt RLS op de server
+alter table users enable row level security;
+create policy "Allow service role" on users for all using ( true ) with check ( true );
+```
 
-## Stripe (test modus)
-- Gebruik test API keys (pk_test_..., sk_test_...) om veilig te testen.
-- Test cards: `4242 4242 4242 4242` mm/yy any CVC.
-- Zet later de live keys in Vercel om betalingen echt te ontvangen.
+## Lokaal draaien
+1) `npm install`
+2) `.env.local` aanmaken met de env vars hierboven
+3) `npm run dev` → open http://localhost:3000
 
-## Webhooks (aanbevolen, later)
-- Voeg een webhook endpoint toe voor `checkout.session.completed` en `invoice.paid` om klanten/subscriptions te registreren in je database.
+## Deploy
+Upload de map naar GitHub en importeer het project in Vercel. Zet de environment variables. Deploy.
 
--- Klaar. Als je wilt, kan ik:
-- De projectmap in één klik voor je deployen (ik geef instructies en help met environment keys).
-- Een webhook + SQLite voorbeeld toevoegen om klanten te bewaren.
