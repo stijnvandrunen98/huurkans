@@ -2,6 +2,7 @@
 import { supabaseAdmin } from './supabaseAdmin'
 
 export async function getUserByEmail(email) {
+  if (!supabaseAdmin) return null
   const { data, error } = await supabaseAdmin
     .from('users')
     .select('*')
@@ -12,11 +13,12 @@ export async function getUserByEmail(email) {
 }
 
 export async function getActiveSubscriptionByUserId(user_id) {
+  if (!supabaseAdmin) return null
   const { data, error } = await supabaseAdmin
     .from('subscriptions')
     .select('*')
     .eq('user_id', user_id)
-    .in('status', ['trialing','active','past_due'])
+    .in('status', ['trialing', 'active', 'past_due'])
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle()
