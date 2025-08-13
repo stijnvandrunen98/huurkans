@@ -2,7 +2,7 @@
 import Head from 'next/head';
 import { supabase } from '../lib/supabaseClient';
 
-export default function ListingsPage({ items }) {
+export default function ListingsPage({ items, filters }) {
   return (
     <>
       <Head>
@@ -17,13 +17,112 @@ export default function ListingsPage({ items }) {
         </nav>
 
         <h1 style={{ fontSize: 28, marginBottom: 12 }}>Listings</h1>
-        <p style={{ color: '#6b7280', marginBottom: 24 }}>
-          Simpele lijst met de laatste items uit de database.
-        </p>
+        <p style={{ color: '#6b7280', marginBottom: 16 }}>Filter op stad en prijs.</p>
+
+        {/* FILTER FORM (stuurt als querystring via GET) */}
+        <form
+          method="GET"
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 140px 140px 120px',
+            gap: 12,
+            alignItems: 'end',
+            marginBottom: 20,
+          }}
+        >
+          <div>
+            <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
+              Stad (exact)
+            </label>
+            <input
+              type="text"
+              name="city"
+              defaultValue={filters.city ?? ''}
+              placeholder="bijv. Amsterdam"
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                border: '1px solid #e5e7eb',
+                borderRadius: 10,
+              }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
+              Minimum prijs
+            </label>
+            <input
+              type="number"
+              name="min"
+              defaultValue={filters.min ?? ''}
+              placeholder="€ min"
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                border: '1px solid #e5e7eb',
+                borderRadius: 10,
+              }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
+              Maximum prijs
+            </label>
+            <input
+              type="number"
+              name="max"
+              defaultValue={filters.max ?? ''}
+              placeholder="€ max"
+              style={{
+                width: '100%',
+                padding: '10px 12px',
+                border: '1px solid #e5e7eb',
+                borderRadius: 10,
+              }}
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="submit"
+              style={{
+                flex: 1,
+                padding: '10px 12px',
+                fontWeight: 600,
+                border: '1px solid #000',
+                borderRadius: 10,
+                background: '#000',
+                color: '#fff',
+              }}
+            >
+              Filter
+            </button>
+
+            <a
+              href="/listings"
+              style={{
+                flex: 1,
+                padding: '10px 12px',
+                fontWeight: 600,
+                border: '1px solid #e5e7eb',
+                borderRadius: 10,
+                background: '#fff',
+                color: '#111',
+                textAlign: 'center',
+                textDecoration: 'none',
+                lineHeight: '36px',
+              }}
+            >
+              Wissen
+            </a>
+          </div>
+        </form>
 
         {items.length === 0 ? (
           <div style={{ padding: 24, border: '1px solid #e5e7eb', borderRadius: 12 }}>
-            Nog niets gevonden. Stuur test items via <code>/admin/ingest-tester</code>.
+            Geen resultaten. Pas je filters aan of stuur test items via <code>/admin/ingest-tester</code>.
           </div>
         ) : (
           <div
@@ -97,20 +196,29 @@ export default function ListingsPage({ items }) {
   );
 }
 
-// Server-side data ophalen uit Supabase
-export async function getServerSideProps() {
-  // Haal de 24 nieuwste "actieve" listings op
-  const { data, error } = await supabase
-    .from('listings')
-    .select('*')
-    .eq('status', 'active')
-    .order('created_at', { ascending: false })
-    .limit(24);
+export async function getServerSideProps({ query }) {
+  // Query-parameters uit de URL lezen
+  const city = typeof query.city === 'string' && query.city.trim() ? query.city.trim() : null;
+  const min = query.min ? Number(query.min) : null;
+  const max = query.max ? Number(query.max) : null;
+
+  // Basis select
+  let q = supabase.from('listings').select('*').eq('status', 'active');
+
+  // Filters toevoegen als ze zijn ingevuld
+  if (city) q = q.eq('city', city);
+  if (min !== null && !Number.isNaN(min)) q = q.gte('price', min);
+  if (max !== null && !Number.isNaN(max)) q = q.lte('price', max);
+
+  // Sorteer nieuwste eerst en limiet
+  q = q.order('created_at', { ascending: false }).limit(24);
+
+  const { data, error } = await q;
 
   if (error) {
     console.error('Supabase fetch error:', error);
-    return { props: { items: [] } };
+    return { props: { items: [], filters: { city, min, max } } };
   }
 
-  return { props: { items: data ?? [] } };
+  return { props: { items: data ?? [], filters: { city, min, max } } };
 }
