@@ -1,102 +1,86 @@
 // pages/api/stripe-webhook.js
-import Stripe from 'stripe'
-import { supabaseAdmin } from '../../lib/supabaseAdmin'
+import Stripe from 'stripe';
+import { buffer } from 'micro';
+import { supabaseAdmin } from '../../lib/supabaseAdmin';
 
-export const config = { api: { bodyParser: false } }
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
+export const config = { api: { bodyParser: false } };
 
-function readBuffer(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = []
-    req.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)))
-    req.on('end', () => resolve(Buffer.concat(chunks)))
-    req.on('error', reject)
-  })
-}
-
-function assertConfigured(res) {
-  if (!supabaseAdmin) {
-    console.error('Supabase niet geconfigureerd: zet env vars in Vercel')
-    res.status(500).json({ error: 'server_not_configured' })
-    return false
-  }
-  if (!process.env.STRIPE_WEBHOOK_SECRET || !process.env.STRIPE_SECRET_KEY) {
-    console.error('Stripe keys ontbreken')
-    res.status(500).json({ error: 'stripe_not_configured' })
-    return false
-  }
-  return true
-}
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST')
-    return res.status(405).end('Method Not Allowed')
-  }
-  if (!assertConfigured(res)) return
+  if (req.method !== 'POST') return res.status(405).end();
 
-  const sig = req.headers['stripe-signature']
-  let event
+  let event;
   try {
-    const buf = await readBuffer(req)
-    event = stripe.webhooks.constructEvent(buf, sig, process.env.STRIPE_WEBHOOK_SECRET)
+    const buf = await buffer(req);
+    const sig = req.headers['stripe-signature'];
+    event = stripe.webhooks.constructEvent(buf, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
-    console.error('Webhook signature verification failed.', err?.message)
-    return res.status(400).send(`Webhook Error: ${err.message}`)
+    console.error('Webhook verify failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
   try {
-    switch (event.type) {
-      case 'checkout.session.completed': {
-        const s = event.data.object
-        const email = s.customer_details?.email || s.customer_email
-        if (!email) break
+    // Helper: update/opslaan in subscriptions
+    async function upsertSubByEmail({ email, customerId, subscriptionId, status, priceId, currentPeriodEnd }) {
+      // koppel user_id via public.users (onze shim)
+      let userId = null;
+      if (email) {
+        const { data: u } = await supabaseAdmin.from('users').select('id').eq('email', email).maybeSingle();
+        userId = u?.id ?? null;
+      }
 
-        const { data: user } = await supabaseAdmin
-          .from('users')
-          .select('*')
-          .eq('email', email)
-          .maybeSingle()
-        if (!user) break
-
-        const subId = s.subscription
-        const custId = s.customer
-        let status = 'active'
-        let periodEnd = null
-        if (subId) {
-          const sub = await stripe.subscriptions.retrieve(subId)
-          status = sub.status
-          periodEnd = sub.current_period_end
-            ? new Date(sub.current_period_end * 1000).toISOString()
-            : null
-        }
-        await supabaseAdmin.from('subscriptions').insert({
-          user_id: user.id,
-          stripe_customer_id: custId || null,
-          stripe_subscription_id: subId || null,
+      // upsert op email (zorg voor unique index; zie stap 2 hieronder)
+      await supabaseAdmin.from('subscriptions').upsert(
+        {
+          email,
+          user_id: userId,
+          stripe_customer_id: customerId,
+          stripe_subscription_id: subscriptionId,
           status,
-          current_period_end: periodEnd,
-        })
-        break
-      }
-      case 'customer.subscription.updated':
-      case 'customer.subscription.deleted': {
-        const sub = event.data.object
-        const periodEnd = sub.current_period_end
-          ? new Date(sub.current_period_end * 1000).toISOString()
-          : null
-        await supabaseAdmin
-          .from('subscriptions')
-          .update({ status: sub.status, current_period_end: periodEnd })
-          .eq('stripe_subscription_id', sub.id)
-        break
-      }
-      default:
-        break
+          price_id: priceId,
+          current_period_end: currentPeriodEnd,
+        },
+        { onConflict: 'email' }
+      );
     }
-    res.json({ received: true })
+
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const subId = session.subscription;
+      const customerId = session.customer;
+      const email = session.customer_details?.email || session.customer_email;
+
+      const sub = await stripe.subscriptions.retrieve(subId);
+      const priceId = sub.items.data[0]?.price?.id || null;
+      const status = sub.status;
+      const currentPeriodEnd = new Date(sub.current_period_end * 1000).toISOString();
+
+      await upsertSubByEmail({ email, customerId, subscriptionId: subId, status, priceId, currentPeriodEnd });
+    }
+
+    if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
+      const sub = event.data.object; // Stripe.Subscription
+      const priceId = sub.items.data[0]?.price?.id || null;
+      const status = sub.status;
+      const currentPeriodEnd = new Date(sub.current_period_end * 1000).toISOString();
+
+      const customer = await stripe.customers.retrieve(sub.customer);
+      const email = customer.email;
+
+      await upsertSubByEmail({
+        email,
+        customerId: sub.customer,
+        subscriptionId: sub.id,
+        status,
+        priceId,
+        currentPeriodEnd,
+      });
+    }
+
+    return res.json({ received: true });
   } catch (e) {
-    console.error('Webhook handler error', e)
-    res.status(500).json({ error: 'server_error' })
+    console.error('Webhook handler error', e);
+    return res.status(500).json({ error: 'Webhook handler failed' });
   }
 }
