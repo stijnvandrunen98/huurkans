@@ -1,0 +1,28 @@
+name: RSS → Ingest
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"  # elke 30 minuten
+  workflow_dispatch:        # handmatig starten via Actions-tab
+
+jobs:
+  run-scraper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install deps
+        run: npm ci || npm i
+
+      - name: Run RSS scraper
+        env:
+          FEED_URL: ${{ secrets.FEED_URL }}
+          INGEST_ENDPOINT: ${{ secrets.INGEST_ENDPOINT }}
+          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
+        run: node scripts/scrape_rss_to_ingest.js
