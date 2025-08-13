@@ -1,63 +1,105 @@
 // pages/admin/ingest-tester.js
-import { useState } from 'react'
+import { useState } from 'react';
 
 export default function IngestTester() {
-  const [secret, setSecret] = useState('')
-  const [status, setStatus] = useState('')
+  const [secure, setSecure] = useState('');
+  const [out, setOut] = useState(null);
 
   const sample = {
-    secret, // <= vul jij hieronder in het invoerveld in
-    source: { name: 'Test Feed', kind: 'rss', url: 'https://example.com/rss' },
-    items: [
-      {
-        url: 'https://example.com/ad/123',
-        title: 'Testappartement 50m² in Amsterdam',
-        description: 'Licht appartement met balkon.',
-        price: 1499,
-        city: 'Amsterdam',
-        bedrooms: 2,
-        area_m2: 50,
-        available_from: '2025-09-01',
-        posted_at: new Date().toISOString(),
-        image_url: 'https://picsum.photos/seed/huurkans/600/400'
-      }
-    ]
-  }
+    // voorbeelditem
+    url: 'https://example.com/ad/123',
+    title: 'Testappartement in Amsterdam',
+    description: 'Schone, lichte woning met balkon.',
+    price: 1499,
+    city: 'Amsterdam',
+  };
 
-  async function send() {
-    setStatus('Bezig…')
+  async function send(dry = false) {
+    setOut({ status: 'Bezig…' });
     try {
-      const res = await fetch('/api/ingest', {
+      const res = await fetch(`/api/ingest${dry ? '?dry=1' : ''}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sample)
-      })
-      const json = await res.json()
-      setStatus(JSON.stringify(json, null, 2))
+        headers: {
+          'Content-Type': 'application/json',
+          'x-ingest-secret': secure.trim(), // <<< HIER zit je secret
+        },
+        body: JSON.stringify(sample),
+      });
+
+      const json = await res.json();
+      setOut({ status: res.status, body: json });
     } catch (e) {
-      setStatus('Fout: ' + e.message)
+      setOut({ status: 'Fout', body: e.message });
     }
   }
 
   return (
-    <main className="container" style={{maxWidth: 640}}>
+    <main style={{ maxWidth: 680, margin: '40px auto', padding: 16 }}>
       <h1>Ingest Tester</h1>
-      <p className="muted">Vul hieronder je <code>INGEST_SECRET</code> in (zoals in Vercel gezet) en klik op “Stuur test item”.</p>
+      <p>
+        Vul hieronder je <code>INGEST_SECRET</code> in (precies zoals in Vercel) en
+        klik op “Stuur test item”.
+      </p>
+
       <input
-        className="input"
+        value={secure}
+        onChange={(e) => setSecure(e.target.value)}
         placeholder="INGEST_SECRET"
-        value={secret}
-        onChange={e => setSecret(e.target.value)}
-        style={{marginTop:12}}
+        style={{
+          width: '100%',
+          padding: 12,
+          borderRadius: 8,
+          border: '1px solid #ddd',
+          fontFamily: 'monospace',
+          marginBottom: 12,
+        }}
       />
-      <div style={{marginTop:12, display:'flex', gap:12}}>
-        <button className="btn orange" onClick={send}>Stuur test item</button>
+
+      <div style={{ display: 'flex', gap: 12 }}>
+        <button
+          onClick={() => send(false)}
+          style={{
+            background: '#ff8800',
+            color: '#fff',
+            padding: '12px 16px',
+            borderRadius: 10,
+            border: 0,
+            fontWeight: 700,
+            cursor: 'pointer',
+          }}
+        >
+          Stuur test item
+        </button>
+
+        <button
+          onClick={() => send(true)}
+          style={{
+            background: '#000',
+            color: '#fff',
+            padding: '12px 16px',
+            borderRadius: 10,
+            border: 0,
+            fontWeight: 700,
+            cursor: 'pointer',
+          }}
+        >
+          Alleen handshake (dry-run)
+        </button>
       </div>
-      {status && (
-        <pre style={{marginTop:16, background:'#f6f6f6', padding:12, borderRadius:8, overflow:'auto'}}>
-{status}
+
+      {out && (
+        <pre
+          style={{
+            marginTop: 16,
+            background: '#f6f6f6',
+            padding: 16,
+            borderRadius: 12,
+            overflowX: 'auto',
+          }}
+        >
+{JSON.stringify(out, null, 2)}
         </pre>
       )}
     </main>
-  )
+  );
 }
