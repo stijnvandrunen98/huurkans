@@ -1,30 +1,30 @@
-import Stripe from 'stripe'
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2022-11-15' })
+// pages/api/create-checkout-session.js
+import Stripe from 'stripe';
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).end('Method Not Allowed')
+  if (req.method !== 'POST') return res.status(405).end();
+
   try {
-    const { email } = req.body || {}
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ error: 'Email ontbreekt' });
+
+    // Zoek bestaande Stripe customer, of maak 'm aan
+    const found = await stripe.customers.list({ email, limit: 1 });
+    const customer = found.data[0] || await stripe.customers.create({ email });
+
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       payment_method_types: ['card'],
-      line_items: [{
-        price_data: {
-          currency: 'eur',
-          product_data: { name: 'Huurkans subscription' },
-          unit_amount: 1499,
-          recurring: { interval: 'month' },
-        },
-        quantity: 1,
-      }],
-      customer_email: email || undefined,
-      allow_promotion_codes: true,
-      success_url: `${process.env.NEXT_PUBLIC_BASE_URL}/success`,
-      cancel_url: `${process.env.NEXT_PUBLIC_BASE_URL}/canceled`,
-    })
-    res.status(200).json({ url: session.url })
-  } catch (err) {
-    console.error(err)
-    res.status(500).json({ error: err.message })
+      customer: customer.id,
+      line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
+      success_url: `${process.env.NEXT_PUBLIC_SITE_URL}/success`,
+      cancel_url: `${process.env.NEXT_PUBLIC_SITE_URL}/canceled`,
+    });
+
+    return res.status(200).json({ url: session.url });
+  } catch (e) {
+    console.error('checkout error', e);
+    return res.status(500).json({ error: 'Kon checkout niet starten' });
   }
 }
