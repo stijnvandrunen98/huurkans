@@ -206,7 +206,7 @@ export async function getServerSideProps({ query }) {
   let q = supabase.from('listings').select('*').eq('status', 'active');
 
   // Filters toevoegen als ze zijn ingevuld
-  if (city) q = q.eq('city', city);
+  if (city) q = q.ilike('city', `%${city}%`);
   if (min !== null && !Number.isNaN(min)) q = q.gte('price', min);
   if (max !== null && !Number.isNaN(max)) q = q.lte('price', max);
 
