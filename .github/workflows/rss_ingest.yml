@@ -1,9 +1,9 @@
 name: RSS → Ingest
 
 on:
-  workflow_dispatch:        # handmatig starten via Actions-tab
   schedule:
-    - cron: "*/30 * * * *"  # elke 30 minuten automatisch
+    - cron: "*/30 * * * *"   # elke 30 minuten automatisch
+  workflow_dispatch:         # handmatig kunnen starten via Actions-tab
 
 jobs:
   run-scraper:
@@ -19,15 +19,11 @@ jobs:
           node-version: 18
 
       - name: Install deps
-        # We hebben geen extra deps nodig, maar dit houdt het future-proof
         run: npm ci || npm i
 
       - name: Run RSS scraper
         env:
-          # Zet deze twee secrets in GitHub (UI) onder:
-          # Settings → Secrets and variables → Actions → New repository secret
-          # 1) INGEST_SECRET  2) FEED_URLS (komma-gescheiden)
-          INGEST_URL: https://huurkans.vercel.app/api/ingest
-          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
-          FEED_URLS: ${{ secrets.FEED_URLS }}
+          FEED_URLS: ${{ secrets.FEED_URLS }}                 # <-- jouw lijst
+          INGEST_URL: https://huurkans.vercel.app/api/ingest  # <-- jouw endpoint
+          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}         # <-- had je al
         run: node scripts/scrape_rss_to_ingest.js
