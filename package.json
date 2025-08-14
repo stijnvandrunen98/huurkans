@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "scrape": "node scripts/scrape_pararius.js",
     "start": "next start -p $PORT",
     "lint": "next lint",
     "vercel-build": "next build",
@@ -14,15 +15,16 @@
   "dependencies": {
     "@supabase/supabase-js": "2.45.4",
     "bcryptjs": "2.4.3",
-    "cross-fetch": "^3.1.8",
     "micro": "10.0.1",
-    "cheerio": "^1.0.0-rc.12",
     "next": "14.2.5",
     "next-auth": "4.24.7",
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "stripe": "14.22.0",
     "playwright": "^1.46.1",
+    "cheerio": "^1.0.0",
+    "cross-fetch": "^4.0.0",
+    "p-limit": "^5.0.0",
     "uuid": "9.0.1"
   },
   "devDependencies": {
