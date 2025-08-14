@@ -1,48 +1,37 @@
 name: Scrape listings (Pararius, per stad)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   schedule:
-    - cron: "*/30 * * * *"   # elke 30 min
+    - cron: "*/30 * * * *" # elke 30 minuten
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 45      # ruim genoeg; hard cap in script is 40 min
+    timeout-minutes: 25
+
     strategy:
       fail-fast: false
       matrix:
-        city: [amsterdam, rotterdam, utrecht]  # breid later uit
-    concurrency:
-      group: scrape-pararius-${{ matrix.city }}
-      cancel-in-progress: true
+        city: [amsterdam, rotterdam, utrecht]
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Node 20
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '20'
+          cache: 'npm'
 
       - name: Install deps
-        run: npm install
+        run: npm ci
 
-      - name: Install Playwright (browsers + deps)
-        run: npx playwright install --with-deps chromium
-
-      - name: Run scraper
+      - name: Run scraper (matrix)
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          INGEST_ENDPOINT: ${{ secrets.INGEST_ENDPOINT }}
-          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
           CITY: ${{ matrix.city }}
-
-          # STRAKKE LIMITS (pas aan als het stabiel loopt):
-          PAGE_LIST_LIMIT: "1"         # 1 overzichtspagina per stad
-          DETAIL_LIMIT: "18"           # max 18 detailpagina's per stad
-          NAV_TIMEOUT_MS: "12000"      # 12s per nav
-          HARD_DEADLINE_MS: "2400000"  # 40 min absolute cap
-        run: node scripts/scrape_pararius.js
+          INGEST_URL: ${{ secrets.INGEST_ENDPOINT }}
+          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
+        run: |
+          npm run scrape
