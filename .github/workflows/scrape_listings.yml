@@ -17,11 +17,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20  # <-- Node 20 zodat File/FormData/Blob globaal zijn
-          cache: npm
+          node-version: 20   # Node 20 = File/FormData/Blob aanwezig
+          # GEEN cache hier -> voorkomt error bij ontbreken lockfile
 
       - name: Install deps
-        run: npm ci
+        run: npm install     # werkt zonder package-lock.json
 
       - name: Install Playwright (browsers + dependencies)
         run: npx playwright install --with-deps chromium
