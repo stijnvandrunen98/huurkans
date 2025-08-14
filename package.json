@@ -1,27 +1,26 @@
 {
   "name": "huurkans",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start -p $PORT",
-    "vercel-build": "next build",
-    "scrape": "node scripts/scrape_pararius.js"
+    "lint": "next lint",
+    "vercel-build": "next build"
   },
   "dependencies": {
-    "@supabase/supabase-js": "2.45.4",
-    "micro": "10.0.1",
     "next": "14.2.5",
-    "node-fetch": "3.3.2",
-    "react": "18.2.0",
-    "react-dom": "18.2.0",
-    "stripe": "14.22.0",
-    "uuid": "9.0.1"
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "@supabase/supabase-js": "^2.45.4",
+    "next-auth": "^4.24.6",
+    "bcryptjs": "^2.4.3",
+    "cross-fetch": "^3.1.8"
   },
   "devDependencies": {
-    "eslint": "8.57.0",
-    "playwright": "1.45.3"
+    "eslint": "^8.57.0",
+    "eslint-config-next": "14.2.5"
   }
 }
