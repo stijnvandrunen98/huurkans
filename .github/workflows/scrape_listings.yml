@@ -3,12 +3,13 @@ name: Scrape listings (Pararius)
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "5 */6 * * *"  # elke 6 uur, op minuut 5
+    - cron: "*/30 * * * *"  # elke 30 minuten
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -16,13 +17,17 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 18
+          cache: npm
 
       - name: Install deps
         run: npm ci || npm i
 
+      - name: Install Playwright (browsers + dependencies)
+        run: npx playwright install --with-deps chromium
+
       - name: Run scraper
         env:
-          INGEST_URL: ${{ secrets.INGEST_URL }}      # zet je live /api/ingest url in repo secrets
-          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}# zet je ingest secret in repo secrets
+          INGEST_URL: ${{ secrets.INGEST_URL }}     # <-- LET OP: deze naam!
+          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
         run: npm run scrape
