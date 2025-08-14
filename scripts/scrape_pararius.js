@@ -1,206 +1,203 @@
 // scripts/scrape_pararius.js
-// Snelle, robuuste scraper met harde limieten en timeouts.
-// - Bezoekt 1..N overzichtspagina's van Pararius per CITY
-// - Haalt maximaal DETAIL_LIMIT detailpagina's op
-// - Stuurt resultaten naar je INGEST_ENDPOINT met INGEST_SECRET
+// Doel: per stad Pararius-detailpagina's ophalen en rijk gevulde listings
+// naar jouw /api/ingest sturen.
 //
-// Vereist: Playwright (chromium) en Node 20+ (fetch is native)
+// Verwacht env variabelen (via GitHub Actions):
+// - CITY             (bijv. "amsterdam", "rotterdam", "utrecht")
+// - INGEST_URL       (bijv. https://huurkans.vercel.app/api/ingest)
+// - INGEST_SECRET    (exact dezelfde als in je Ingest Tester)
 
-import { chromium } from 'playwright';
+import fetch from 'cross-fetch';
+import * as cheerio from 'cheerio';
+import pLimit from 'p-limit';
 
-// ---------- Config uit ENV met veilige defaults ----------
-const CITY = process.env.CITY || 'amsterdam';
-const PAGE_LIST_LIMIT = parseInt(process.env.PAGE_LIST_LIMIT || '1', 10);     // hoeveel overzichtspagina’s
-const DETAIL_LIMIT   = parseInt(process.env.DETAIL_LIMIT || '15', 10);       // max detailpagina’s
-const NAV_TIMEOUT_MS = parseInt(process.env.NAV_TIMEOUT_MS || '12000', 10);  // 12s per navigatie
-const HARD_DEADLINE_MS = parseInt(process.env.HARD_DEADLINE_MS || '2400000', 10); // 40 min absolute cap
+const CITY = (process.env.CITY || '').toLowerCase().trim();
+const INGEST_URL = process.env.INGEST_URL;
+const INGEST_SECRET = process.env.INGEST_SECRET;
 
-const INGEST_ENDPOINT = process.env.INGEST_ENDPOINT;
-const INGEST_SECRET   = process.env.INGEST_SECRET;
+if (!CITY) throw new Error('CITY ontbreekt');
+if (!INGEST_URL) throw new Error('INGEST_URL ontbreekt');
+if (!INGEST_SECRET) throw new Error('INGEST_SECRET ontbreekt');
 
-if (!INGEST_ENDPOINT || !INGEST_SECRET) {
-  console.error('INGEST_ENDPOINT en/of INGEST_SECRET ontbreken in ENV.');
-  process.exit(1);
-}
+const BASE = `https://www.pararius.nl/huurwoningen/${CITY}`;
 
-// ---------- Helpers ----------
+// ——————————————————————————————————————————————————————
+// Helpers
+// ——————————————————————————————————————————————————————
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-function unique(arr) {
-  return [...new Set(arr)];
+function cleanText(t) {
+  return (t || '').replace(/\s+/g, ' ').trim();
+}
+function parsePrice(text) {
+  // Zoekt "€ 1.499" of "€1.499" enz.
+  const m = (text || '').match(/€\s?([\d\.\,]+)/);
+  if (!m) return null;
+  const raw = m[1].replace(/\./g, '').replace(',', '');
+  const val = parseInt(raw, 10);
+  return Number.isFinite(val) ? val : null;
+}
+function parseArea(text) {
+  const m = (text || '').match(/(\d+)\s?m²/i);
+  if (!m) return null;
+  return parseInt(m[1], 10);
+}
+function parseBedrooms(text) {
+  // pakt “2 kamers” of “3 slaapkamers”
+  const m = (text || '').match(/(\d+)\s?(?:slaapkamers?|kamers?)/i);
+  if (!m) return null;
+  return parseInt(m[1], 10);
 }
 
-// Pararius URL voor stad. We pakken huurwoningen in <CITY>.
-function buildCityUrl(city, page = 1) {
-  // basis: https://www.pararius.nl/huurwoningen/<city>
-  // Pararius werkt met pagination als /page-2
-  if (page <= 1) return `https://www.pararius.nl/huurwoningen/${encodeURIComponent(city)}`;
-  return `https://www.pararius.nl/huurwoningen/${encodeURIComponent(city)}/page-${page}`;
+async function fetchHtml(url) {
+  const res = await fetch(url, {
+    headers: {
+      'user-agent':
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36',
+      'accept-language': 'nl-NL,nl;q=0.9,en;q=0.8',
+    },
+  });
+  if (!res.ok) throw new Error(`Fetch ${url} -> ${res.status}`);
+  return await res.text();
 }
 
-// Heel simple extractors – we vallen terug op undefined als selectors niet matchen.
-// Pararius past soms classes aan, dus we houden het defensief.
-async function scrapeDetail(page, url) {
-  try {
-    await page.goto(url, { timeout: NAV_TIMEOUT_MS, waitUntil: 'domcontentloaded' });
+// ——————————————————————————————————————————————————————
+// Stap 1: verzamel detail-URL’s vanaf de stadspagina (paar pagina’s diep)
+// ——————————————————————————————————————————————————————
+async function collectDetailUrls(city, maxPages = 3) {
+  const urls = new Set();
 
-    // Probeer title
-    const title = (await page.locator('h1, .listing-detail-summary__title, [data-testid="detail-title"]').first().textContent({ timeout: 1000 }).catch(() => null))?.trim() || null;
-
-    // Probeer prijs (euro bedragen op detailpagina)
-    const priceText = (await page.locator('text=€').first().textContent({ timeout: 1000 }).catch(() => null)) || null;
-    const price = priceText ? Number((priceText.match(/[\d\.\,]+/) || [])[0]?.replace(/\./g, '').replace(',', '.')) : null;
-
-    // Probeer adres / plaats
-    const address = (await page.locator('[data-testid="address"], .listing-detail-summary__address, .address').first().textContent({ timeout: 1000 }).catch(() => null))?.trim() || null;
-
-    // Korte beschrijving
-    const description = (await page.locator('[data-testid="description"], .listing-detail-description, article').first().textContent({ timeout: 1000 }).catch(() => null))?.trim() || null;
-
-    // Oppervlakte & kamers (heuristiek: zoek naar m² en kamers in kenmerkentabel)
-    const factsText = (await page.locator('body').textContent({ timeout: 500 }).catch(() => null)) || '';
-    const areaMatch = factsText.match(/(\d{2,4})\s?m²/i);
-    const area_m2 = areaMatch ? Number(areaMatch[1]) : null;
-
-    const roomsMatch = factsText.match(/(\d+)\s?(kamers|kamer)/i);
-    const rooms = roomsMatch ? Number(roomsMatch[1]) : null;
-
-    // Eerste beeld (optioneel)
-    const imageUrl = await page.locator('img').first().getAttribute('src').catch(() => null);
-
-    return {
-      ok: true,
-      data: {
-        url,
-        title,
-        price,
-        city: CITY,
-        address,
-        area_m2,
-        rooms,
-        description,
-        image_url: imageUrl || null,
-      },
-    };
-  } catch (err) {
-    return { ok: false, error: String(err), url };
-  }
-}
-
-async function postIngest(item) {
-  try {
-    const res = await fetch(INGEST_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-ingest-secret': INGEST_SECRET,
-      },
-      body: JSON.stringify(item),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Ingest failed: ${res.status} ${text}`);
-    }
-    return true;
-  } catch (e) {
-    console.error('Ingest error:', e.message);
-    return false;
-  }
-}
-
-// ---------- Main ----------
-(async () => {
-  const t0 = Date.now();
-
-  console.log(`City: ${CITY}`);
-  console.log(`Limits: list pages=${PAGE_LIST_LIMIT}, detail=${DETAIL_LIMIT}, navTimeout=${NAV_TIMEOUT_MS}ms, hard cap=${HARD_DEADLINE_MS}ms`);
-
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
-  const page = await context.newPage();
-
-  page.setDefaultTimeout(NAV_TIMEOUT_MS);
-
-  const allDetailUrls = [];
-
-  // 1) verzamel detail-urls vanaf overzichtspagina’s (met cap op pagina’s)
-  for (let p = 1; p <= PAGE_LIST_LIMIT; p++) {
-    const listUrl = buildCityUrl(CITY, p);
-    const sinceStart = Date.now() - t0;
-    if (sinceStart > HARD_DEADLINE_MS) {
-      console.warn('Hard deadline bereikt tijdens lijst-collectie; stoppen.');
-      break;
-    }
-
-    console.log(`List page: ${listUrl}`);
+  for (let p = 1; p <= maxPages; p++) {
+    const pageUrl = p === 1 ? BASE : `${BASE}/page-${p}`;
     try {
-      await page.goto(listUrl, { timeout: NAV_TIMEOUT_MS, waitUntil: 'domcontentloaded' });
+      const html = await fetchHtml(pageUrl);
+      const $ = cheerio.load(html);
 
-      // verzamel alle anchors met '/huurwoningen/' en niet de lijstpagina’s zelf
-      const anchors = await page.locator('a').evaluateAll(nodes =>
-        nodes
-          .map(n => n.getAttribute('href'))
-          .filter(Boolean)
-      );
-
-      const detail = anchors
-        .filter(href => href && href.startsWith('/huurwoningen/') && !/\/page-\d+/.test(href))
-        .map(href => (href.startsWith('http') ? href : `https://www.pararius.nl${href}`));
-
-      const uniq = unique(detail);
-      console.log(`  gevonden urls (uniq): ${uniq.length}`);
-
-      allDetailUrls.push(...uniq);
-
-      if (allDetailUrls.length >= DETAIL_LIMIT) break;
+      // Ankers met detail-links. We gebruiken brede selector + filter op stad.
+      $('a[href*="/huurwoningen/"]').each((_, el) => {
+        const href = $(el).attr('href') || '';
+        if (
+          href.startsWith('/') &&
+          href.includes(`/huurwoningen/${city}`) &&
+          !href.includes('/kaart') &&
+          !href.includes('/nieuwbouw') &&
+          !href.includes('/project')
+        ) {
+          urls.add(`https://www.pararius.nl${href.split('?')[0]}`);
+        }
+      });
     } catch (e) {
-      console.warn(`  list page error: ${e.message}`);
+      console.warn(`Pagina skip (${pageUrl}):`, e.message);
     }
-    // kleine pauze om blokkade te voorkomen
-    await sleep(300);
+    // klein pauze tussen pagina’s
+    await sleep(500);
   }
 
-  // beperken tot max DETAIL_LIMIT
-  const targets = unique(allDetailUrls).slice(0, DETAIL_LIMIT);
-  console.log(`Detail targets: ${targets.length}`);
+  return [...urls];
+}
 
-  // 2) details scrapen met kleine concurrency (3)
-  const results = [];
-  const concurrency = 3;
-  let i = 0;
+// ——————————————————————————————————————————————————————
+// Stap 2: detailpagina parsen
+// ——————————————————————————————————————————————————————
+function extractFromDetail(html) {
+  const $ = cheerio.load(html);
 
-  while (i < targets.length) {
-    const sinceStart = Date.now() - t0;
-    if (sinceStart > HARD_DEADLINE_MS) {
-      console.warn('Hard deadline bereikt tijdens detail-scrape; stoppen.');
-      break;
-    }
+  // Titels en beschrijving vaak ook als og:meta aanwezig.
+  const title =
+    cleanText($('h1').first().text()) ||
+    cleanText($('meta[property="og:title"]').attr('content')) ||
+    null;
 
-    const chunk = targets.slice(i, i + concurrency);
-    const pages = await Promise.all(chunk.map(() => context.newPage()));
-    const settled = await Promise.allSettled(chunk.map((url, idx) => scrapeDetail(pages[idx], url)));
-    await Promise.all(pages.map(p => p.close().catch(() => {})));
+  const description =
+    cleanText($('.listing-detail-description, .description, [data-test="object-description"]').text()) ||
+    cleanText($('meta[name="description"]').attr('content')) ||
+    null;
 
-    for (const s of settled) {
-      if (s.status === 'fulfilled' && s.value?.ok) results.push(s.value.data);
-    }
+  const image_url =
+    $('meta[property="og:image"]').attr('content') ||
+    $('img').first().attr('src') ||
+    null;
 
-    i += concurrency;
+  // Zoek in hele pagina naar prijs/m²/kamers, werkt robuust tegen layout-wijzigingen.
+  const pageText = $('body').text();
+
+  const price =
+    parsePrice($('#price, .listing-detail-price, [data-test="price"]').text()) ||
+    parsePrice(pageText);
+
+  const area_m2 =
+    parseArea($('.listing-features, .features, [data-test="features"]').text()) ||
+    parseArea(pageText);
+
+  const bedrooms =
+    parseBedrooms($('.listing-features, .features, [data-test="features"]').text()) ||
+    parseBedrooms(pageText);
+
+  return { title, description, image_url, price, area_m2, bedrooms };
+}
+
+// ——————————————————————————————————————————————————————
+// Stap 3: naar jouw ingest API sturen
+// ——————————————————————————————————————————————————————
+async function sendToIngest(payload) {
+  const res = await fetch(INGEST_URL, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      // Zelfde headernaam als in je Ingest Tester:
+      'x-ingest-secret': INGEST_SECRET,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`Ingest ${res.status} ${t}`);
   }
+}
 
-  console.log(`OK details: ${results.length}`);
+// ——————————————————————————————————————————————————————
+// Main
+// ——————————————————————————————————————————————————————
+(async () => {
+  console.log(`Start scrape: ${CITY}`);
+  const detailUrls = await collectDetailUrls(CITY, 3); // eerste 3 pagina’s
+  console.log(`Gevonden detail-URL’s: ${detailUrls.length}`);
 
-  // 3) ingest posten (best-effort)
-  let okCount = 0;
-  for (const item of results) {
-    const ok = await postIngest(item);
-    if (ok) okCount++;
-    await sleep(100);
-  }
-  console.log(`Ingest success: ${okCount}/${results.length}`);
+  // Beperk parallel requests zodat we binnen de GitHub Actions tijd blijven.
+  const limit = pLimit(5);
 
-  await browser.close();
+  let success = 0;
+  let fail = 0;
 
-  console.log('Done in', Math.round((Date.now() - t0) / 1000), 's');
-  process.exit(0);
+  await Promise.all(
+    detailUrls.map((url) =>
+      limit(async () => {
+        try {
+          const html = await fetchHtml(url);
+          const fields = extractFromDetail(html);
+
+          // Minimale set die jouw /api/ingest verwacht + extra velden.
+          const payload = {
+            url,
+            title: fields.title,
+            description: fields.description,
+            city: CITY,
+            price: fields.price ?? 0,
+            area_m2: fields.area_m2,
+            bedrooms: fields.bedrooms,
+            image_url: fields.image_url,
+            status: 'active',
+          };
+
+          await sendToIngest(payload);
+          success++;
+        } catch (e) {
+          fail++;
+          console.warn('Detail fout:', url, e.message);
+        }
+      })
+    )
+  );
+
+  console.log(`Klaar. OK: ${success}  FOUT: ${fail}`);
 })();
