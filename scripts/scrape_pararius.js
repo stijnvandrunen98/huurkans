@@ -1,8 +1,6 @@
 // scripts/scrape_pararius.js
-// Doel: enkele stadspagina's van Pararius ophalen, kaarten vinden, per detailpagina velden scrapen,
-// en als batches posten naar jouw /api/ingest endpoint (met secret).
-//
-// Let op: altijd respecteer robots/voorwaarden van sites die je crawlt.
+// Scrape Pararius-stadspagina's -> detaildata per woning -> post in batches naar /api/ingest
+// Houd rekening met sites/ToS; schroef limieten rustig op als alles werkt.
 
 import fetch from "cross-fetch";
 import * as cheerio from "cheerio";
@@ -10,21 +8,17 @@ import { chromium } from "playwright";
 
 const START_URLS = [
   "https://www.pararius.nl/huurwoningen/amsterdam",
-  // Voeg later evt. toe:
+  // Voeg later toe:
   // "https://www.pararius.nl/huurwoningen/rotterdam",
   // "https://www.pararius.nl/huurwoningen/utrecht",
 ];
 
-// Limieten zodat je gratis minuten niet opbranden
-const MAX_LISTING_URLS_PER_CITY = 50;   // per stad
-const MAX_PAGES_PER_CITY = 2;           // aantal paginatiepagina’s per stad
+const MAX_LISTING_URLS_PER_CITY = 40;  // hou het even licht
+const MAX_PAGES_PER_CITY = 2;
 
-// Ingest endpoint (van jouw live site)
 const INGEST_URL = process.env.INGEST_URL || "https://huurkans.vercel.app/api/ingest";
-// Secret voor je /api/ingest (zet je zo bij GitHub Secrets)
 const INGEST_SECRET = process.env.INGEST_SECRET;
 
-// Helper: wacht
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 function numberFrom(str) {
@@ -38,6 +32,14 @@ function unique(arr) {
   return Array.from(new Set(arr.filter(Boolean)));
 }
 
+function extractCity(raw) {
+  // Probeer stad uit locatietekst, bv. "Amsterdam - Centrum" -> "Amsterdam"
+  if (!raw) return null;
+  const t = raw.replace(/\s+/g, " ").trim();
+  const parts = t.split(/[,-]/).map(s => s.trim()).filter(Boolean);
+  return parts[0] || t || null;
+}
+
 async function findListingUrlsOnPage(url) {
   const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
   if (!resp.ok) throw new Error(`Fetch fail ${url}: ${resp.status}`);
@@ -45,8 +47,6 @@ async function findListingUrlsOnPage(url) {
   const $ = cheerio.load(html);
 
   const urls = new Set();
-
-  // Pararius kaartjes (a-tags naar detailpagina’s)
   $("a[href^='/huurwoningen/']").each((_, el) => {
     const href = $(el).attr("href");
     if (href && !href.includes("/project/") && !href.includes("/english")) {
@@ -62,20 +62,18 @@ async function scrapeDetail(browser, url) {
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
 
-    // Probeer content: titel, locatie
     const title = (await page.locator("h1").first().textContent().catch(() => ""))?.trim() || "";
-    const location =
+    const locationText =
       (await page.locator(".listing-detail-summary__location").first().textContent().catch(() => ""))?.trim() || "";
 
-    // Hele body text voor regex (m², kamers)
     const bodyText = (await page.locator("body").textContent().catch(() => "")) || "";
 
     const priceRaw =
       (await page.locator(".listing-detail-summary__price").first().textContent().catch(() => ""))?.trim() || "";
-    const price_month = numberFrom(priceRaw);
+    const price = numberFrom(priceRaw);
 
     const m2Match = bodyText.match(/(\d{2,4})\s?m²|([0-9]{2,4})\s?m2/i);
-    const surface_m2 = m2Match ? parseInt((m2Match[1] || m2Match[2]).replace(/\D/g, ""), 10) : null;
+    const area_m2 = m2Match ? parseInt((m2Match[1] || m2Match[2]).replace(/\D/g, ""), 10) : null;
 
     const roomsMatch = bodyText.match(/(\d+)\s*(?:kamer|kamers)/i);
     const bedroomsMatch = bodyText.match(/(\d+)\s*(?:slaapkamer|slaapkamers)/i);
@@ -93,30 +91,36 @@ async function scrapeDetail(browser, url) {
 
     // Afbeeldingen
     const imgs = new Set();
-    // og:image
     const og = await page.locator("meta[property='og:image']").getAttribute("content").catch(() => null);
     if (og) imgs.add(og);
-    // img tags
     const imgEls = await page.locator("img").all();
     for (const el of imgEls) {
-      const src = (await el.getAttribute("src").catch(() => null)) || (await el.getAttribute("data-src").catch(() => null));
+      const src =
+        (await el.getAttribute("src").catch(() => null)) ||
+        (await el.getAttribute("data-src").catch(() => null));
       if (src && !src.startsWith("data:")) imgs.add(src);
     }
+    const images = unique(Array.from(imgs));
+    const image_url = images[0] || null;
 
-    const item = {
+    // === BELANGRIJK: map naar jouw ingest/DB-schema ===
+    const itemForIngest = {
       source: "pararius",
+      source_id: url,          // uniek per bron
       url,
-      title,
-      location,
-      price_month: price_month || null,
-      surface_m2,
+      title: title || null,
+      description,
+      price: price || null,    // jouw veldnaam = price
+      city: extractCity(locationText),
+      address: null,           // Pararius verbergt vaak exact adres -> laten we null
+      area_m2,
       rooms,
       bedrooms,
-      description,
-      images: unique(Array.from(imgs)),
+      image_url,               // jouw veldnaam = image_url
+      posted_at: null          // onbekend -> null
     };
 
-    return item;
+    return itemForIngest;
   } catch (e) {
     console.error("Detail error:", url, e.message);
     return null;
@@ -159,21 +163,20 @@ async function run() {
         await sleep(1000);
       }
 
-      // Beperk en scrape details
       const detailUrls = Array.from(collected).slice(0, MAX_LISTING_URLS_PER_CITY);
       console.log("  Scraping detail pages:", detailUrls.length);
 
       for (const u of detailUrls) {
         const item = await scrapeDetail(browser, u);
         if (item) allItems.push(item);
-        await sleep(500); // even lief zijn
+        await sleep(400);
       }
     }
   } finally {
     await browser.close().catch(() => {});
   }
 
-  console.log("Total items:", allItems.length);
+  console.log("Total items scraped:", allItems.length);
 
   // Batch posten (per 25)
   const batchSize = 25;
@@ -196,7 +199,7 @@ async function run() {
     } else {
       console.log("Ingest OK");
     }
-    await sleep(500);
+    await sleep(400);
   }
 }
 
