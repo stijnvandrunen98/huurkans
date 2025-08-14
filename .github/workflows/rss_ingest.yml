@@ -20,9 +20,8 @@ jobs:
       - name: Install deps
         run: npm ci || npm i
 
-      - name: Run RSS scraper
-        env:
-          FEED_URL: ${{ secrets.FEED_URL }}
-          INGEST_ENDPOINT: ${{ secrets.INGEST_ENDPOINT }}
-          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
-        run: node scripts/scrape_rss_to_ingest.js
+    - name: Run RSS scraper
+      env:
+        INGEST_URL: https://huurkans.vercel.app/api/ingest
+        INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
+      run: node scripts/scrape_rss_to_ingest.js
