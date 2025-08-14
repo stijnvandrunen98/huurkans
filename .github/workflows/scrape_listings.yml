@@ -1,35 +1,36 @@
-name: Scrape listings (Pararius)
+name: Scrape listings (Pararius, per stad)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"  # elke 30 minuten
+    - cron: "*/30 * * * *"
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        city: [amsterdam, rotterdam, utrecht]  # breid later uit
+    concurrency:
+      group: scrape-pararius-${{ matrix.city }}
+      cancel-in-progress: true
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 20   # Node 20 = File/FormData/Blob aanwezig
-          # GEEN cache hier -> voorkomt error bij ontbreken lockfile
-
-      - name: Install deps
-        run: npm install     # werkt zonder package-lock.json
-
-      - name: Install Playwright (browsers + dependencies)
-        run: npx playwright install --with-deps chromium
-
+          node-version: 20
+      - run: npm install
+      - run: npx playwright install --with-deps chromium
       - name: Run scraper
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           INGEST_ENDPOINT: ${{ secrets.INGEST_ENDPOINT }}
           INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
+          CITY: ${{ matrix.city }}
+          DETAIL_LIMIT: "20"
+          NAV_TIMEOUT_MS: "12000"
         run: npm run scrape
