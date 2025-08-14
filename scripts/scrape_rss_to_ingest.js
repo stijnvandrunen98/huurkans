@@ -1,94 +1,126 @@
-// CommonJS versie (werkt zonder "type":"module")
-const Parser = require('rss-parser');
-const crypto = require('crypto');
-const fetch = require('node-fetch'); // node-fetch staat al in je workflow install
+/**
+ * Lightweight RSS -> ingest script
+ * - Geen extra npm dependencies
+ * - Werkt met Node 18 (global fetch)
+ * - FEED_URLS: komma-gescheiden lijst in een GitHub Secret
+ * - INGEST_URL: jouw endpoint (in workflow vastgezet)
+ * - INGEST_SECRET: geheime sleutel (moet 1-op-1 gelijk zijn aan Vercel's waarde)
+ */
 
-// 1) Zet hier je FEEDS neer (voor test mag elk publieke RSS)
-// LET OP: zet HIER de echte URLs neer; GEEN 'voorbeeld.nl'
-const FEEDS = [
-  // Voor test: HN feed (werkt altijd)
-  'https://hnrss.org/newest?points=100',
-  // Later vervang je deze door je echte woning-RSS bronnen
-];
-
-// 2) Endpoint + secret (uit Vercel Env)
-const INGEST_URL = process.env.INGEST_URL || 'https://huurkans.vercel.app/api/ingest';
+const INGEST_URL = process.env.INGEST_URL;
 const INGEST_SECRET = process.env.INGEST_SECRET;
+const FEED_URLS = (process.env.FEED_URLS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
-// Kleine helper: hash van URL
-function urlHash(u) {
-  return crypto.createHash('sha256').update(u).digest('hex').slice(0, 32);
+if (!INGEST_URL) {
+  console.error("Misconfig: INGEST_URL ontbreekt (env).");
+  process.exit(1);
+}
+if (!INGEST_SECRET) {
+  console.error("Misconfig: INGEST_SECRET ontbreekt (env/secret).");
+  process.exit(1);
+}
+if (FEED_URLS.length === 0) {
+  console.error(
+    "Misconfig: FEED_URLS ontbreekt (env/secret) — voeg een komma-gescheiden lijst toe."
+  );
+  process.exit(1);
 }
 
-async function run() {
-  if (!INGEST_SECRET) {
-    console.error('INGEST_SECRET ontbreekt (env var).');
-    process.exit(1);
+// Heel simpele RSS parser (zonder externe lib).
+// Pakt <item> blokken en daaruit <title>, <link>, <description>.
+function parseRss(xml) {
+  const items = [];
+  const itemRegex = /<item\b[\s\S]*?<\/item>/gi;
+  const get = (block, tag) => {
+    const m = block.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
+    return m ? cleanup(m[1]) : null;
+  };
+  const cleanup = (s) =>
+    s
+      ?.replace(/<!\[CDATA\[(.*?)\]\]>/gs, "$1")
+      ?.replace(/<[^>]+>/g, "")
+      ?.trim() ?? null;
+
+  let match;
+  while ((match = itemRegex.exec(xml))) {
+    const block = match[0];
+    const title = get(block, "title");
+    const link = get(block, "link");
+    const description = get(block, "description");
+    if (link) {
+      items.push({ title, url: link, description });
+    }
   }
+  return items;
+}
 
-  const parser = new Parser();
+async function fetchText(url) {
+  const res = await fetch(url, {
+    headers: {
+      // Sommige sites blokkeren bots; dit kan helpen:
+      "User-Agent":
+        "Mozilla/5.0 (compatible; HuurkansBot/1.0; +https://huurkans.vercel.app)",
+      Accept: "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`Fetch ${url} failed: ${res.status} ${res.statusText}`);
+  }
+  return res.text();
+}
 
-  for (const feedUrl of FEEDS) {
-    console.log('Fetch feed:', feedUrl);
+async function postToIngest(item) {
+  // We sturen secret zowel in header als in body voor maximale compatibiliteit.
+  const payload = {
+    secret: INGEST_SECRET,
+    // Minimale velden; jouw ingest maakt zelf een url-hash
+    url: item.url,
+    title: item.title,
+    description: item.description,
+    // Je kunt hier extra velden mappen als je ingest dat slikt (price, city, etc.)
+  };
 
-    let feed;
+  const res = await fetch(INGEST_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-ingest-secret": INGEST_SECRET,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Ingest failed (${res.status}): ${t}`);
+  }
+}
+
+(async () => {
+  console.log(`FEEDS: ${FEED_URLS.join(", ")}`);
+  for (const feed of FEED_URLS) {
     try {
-      feed = await parser.parseURL(feedUrl);
-    } catch (e) {
-      console.error('Feed ophalen mislukt:', feedUrl, e.message);
-      continue;
-    }
+      console.log(`==> Haal feed op: ${feed}`);
+      const xml = await fetchText(feed);
+      const items = parseRss(xml);
+      console.log(`   Gevonden items: ${items.length}`);
 
-    console.log(`Items gevonden in ${feedUrl}:`, feed.items?.length ?? 0);
-
-    for (const item of feed.items || []) {
-      // Map basisvelden -> listings schema
-      const url = item.link || item.guid || '';
-      if (!url) continue;
-
-      const mapped = {
-        // id wordt server-side aangemaakt (supabase default)
-        source_id: null,               // optioneel
-        url,
-        url_hash: urlHash(url),
-        title: item.title || '',
-        description: (item.contentSnippet || item.content || '').slice(0, 800),
-        price: null,
-        city: null,
-        address: null,
-        area_m2: null,
-        rooms: null,
-        available_from: null,
-        posted_at: item.isoDate || item.pubDate || null,
-        image_url: Array.isArray(item.enclosure) ? item.enclosure[0]?.url
-                 : (item.enclosure && item.enclosure.url) || null,
-        status: 'active',
-      };
-
-      try {
-        const res = await fetch(INGEST_URL, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-ingest-secret': INGEST_SECRET,
-          },
-          body: JSON.stringify(mapped),
-        });
-
-        if (!res.ok) {
-          const txt = await res.text();
-          console.error('Ingest failed', res.status, txt);
-        } else {
-          console.log('Ingest OK →', mapped.url);
+      for (const it of items) {
+        try {
+          await postToIngest(it);
+          console.log(`   ✔ Ingest OK: ${it.url}`);
+        } catch (e) {
+          console.warn(`   ✖ Ingest fout voor ${it.url}: ${e.message}`);
         }
-      } catch (err) {
-        console.error('Ingest error:', err.message);
       }
+    } catch (e) {
+      console.warn(`Feed fout (${feed}): ${e.message}`);
     }
   }
-}
-
-run().catch((e) => {
-  console.error('Fatal:', e);
+  console.log("Klaar.");
+})().catch((e) => {
+  console.error("Onverwachte fout:", e);
   process.exit(1);
 });
