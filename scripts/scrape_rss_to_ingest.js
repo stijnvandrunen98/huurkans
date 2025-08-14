@@ -1,85 +1,94 @@
-// scripts/scrape_rss_to_ingest.js
-// Doel: haal items uit een RSS feed en stuur ze naar jouw /api/ingest.
-// Vereist ENV vars: FEED_URL, INGEST_ENDPOINT, INGEST_SECRET
+// CommonJS versie (werkt zonder "type":"module")
+const Parser = require('rss-parser');
+const crypto = require('crypto');
+const fetch = require('node-fetch'); // node-fetch staat al in je workflow install
 
-import Parser from 'rss-parser';
+// 1) Zet hier je FEEDS neer (voor test mag elk publieke RSS)
+// LET OP: zet HIER de echte URLs neer; GEEN 'voorbeeld.nl'
+const FEEDS = [
+  // Voor test: HN feed (werkt altijd)
+  'https://hnrss.org/newest?points=100',
+  // Later vervang je deze door je echte woning-RSS bronnen
+];
 
-const FEED_URL = process.env.FEED_URL;                // bv. https://example.com/feed.xml
-const ENDPOINT = process.env.INGEST_ENDPOINT;         // bv. https://huurkans.vercel.app/api/ingest
-const SECRET   = process.env.INGEST_SECRET;           // zelfde als in Vercel
+// 2) Endpoint + secret (uit Vercel Env)
+const INGEST_URL = process.env.INGEST_URL || 'https://huurkans.vercel.app/api/ingest';
+const INGEST_SECRET = process.env.INGEST_SECRET;
 
-if (!FEED_URL || !ENDPOINT || !SECRET) {
-  console.error('Misconfig: zet FEED_URL, INGEST_ENDPOINT en INGEST_SECRET als environment variables.');
-  process.exit(1);
+// Kleine helper: hash van URL
+function urlHash(u) {
+  return crypto.createHash('sha256').update(u).digest('hex').slice(0, 32);
 }
 
-function toPriceNumber(str = '') {
-  // Haal cijfers uit bv. "€ 1.499 p/m" => 1499
-  const n = parseInt(String(str).replace(/[^\d]/g, ''), 10);
-  return Number.isFinite(n) ? n : null;
-}
-
-function firstImage(html = '') {
-  const match = String(html).match(/<img[^>]+src="([^"]+)"/i);
-  return match ? match[1] : null;
-}
-
-function shortText(s = '', max = 280) {
-  const t = String(s).replace(/<[^>]+>/g, '').trim();
-  return t.length > max ? t.slice(0, max) + '…' : t;
-}
-
-async function main() {
-  const parser = new Parser();
-  const feed = await parser.parseURL(FEED_URL);
-
-  // Zet RSS-items om naar jouw listing-model
-  const items = (feed.items || []).map((it) => {
-    const url   = it.link || it.guid || null;
-    const title = it.title || '(zonder titel)';
-
-    // Probeer simpele velden uit description/content te vissen
-    const desc  = it.contentSnippet || it.content || it.summary || '';
-    const img   = firstImage(it.content || it.summary || '');
-
-    // Heel basic prijs/plaats detectie (optioneel, verschilt per feed)
-    const price = toPriceNumber(desc);
-    // Als feed geen city geeft, kun je hier een vaste waarde zetten of regex bouwen
-    const city  = (it.categories && it.categories[0]) || null;
-
-    return {
-      url,
-      title,
-      description: shortText(desc, 400),
-      price,
-      city,
-      image_url: img
-    };
-  })
-  // filter junk/lege url’s
-  .filter(x => x.url && x.title);
-
-  if (!items.length) {
-    console.log('Geen bruikbare items gevonden in feed.');
-    return;
+async function run() {
+  if (!INGEST_SECRET) {
+    console.error('INGEST_SECRET ontbreekt (env var).');
+    process.exit(1);
   }
 
-  // POST naar je ingest endpoint (in één batch)
-  const res = await fetch(ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-ingest-secret': SECRET
-    },
-    body: JSON.stringify(items)
-  });
+  const parser = new Parser();
 
-  const json = await res.json();
-  console.log('INGEST', res.status, json);
-  if (!res.ok) process.exit(1);
+  for (const feedUrl of FEEDS) {
+    console.log('Fetch feed:', feedUrl);
+
+    let feed;
+    try {
+      feed = await parser.parseURL(feedUrl);
+    } catch (e) {
+      console.error('Feed ophalen mislukt:', feedUrl, e.message);
+      continue;
+    }
+
+    console.log(`Items gevonden in ${feedUrl}:`, feed.items?.length ?? 0);
+
+    for (const item of feed.items || []) {
+      // Map basisvelden -> listings schema
+      const url = item.link || item.guid || '';
+      if (!url) continue;
+
+      const mapped = {
+        // id wordt server-side aangemaakt (supabase default)
+        source_id: null,               // optioneel
+        url,
+        url_hash: urlHash(url),
+        title: item.title || '',
+        description: (item.contentSnippet || item.content || '').slice(0, 800),
+        price: null,
+        city: null,
+        address: null,
+        area_m2: null,
+        rooms: null,
+        available_from: null,
+        posted_at: item.isoDate || item.pubDate || null,
+        image_url: Array.isArray(item.enclosure) ? item.enclosure[0]?.url
+                 : (item.enclosure && item.enclosure.url) || null,
+        status: 'active',
+      };
+
+      try {
+        const res = await fetch(INGEST_URL, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-ingest-secret': INGEST_SECRET,
+          },
+          body: JSON.stringify(mapped),
+        });
+
+        if (!res.ok) {
+          const txt = await res.text();
+          console.error('Ingest failed', res.status, txt);
+        } else {
+          console.log('Ingest OK →', mapped.url);
+        }
+      } catch (err) {
+        console.error('Ingest error:', err.message);
+      }
+    }
+  }
 }
 
-main().catch((e) => {
-  console.error(e);
+run().catch((e) => {
+  console.error('Fatal:', e);
   process.exit(1);
 });
