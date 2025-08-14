@@ -1,13 +1,27 @@
 {
-  "name": "huurkans-scraper",
+  "name": "huurkans",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start -p $PORT",
+    "vercel-build": "next build",
     "scrape": "node scripts/scrape_pararius.js"
   },
   "dependencies": {
-    "cheerio": "1.0.0-rc.12",
-    "cross-fetch": "4.0.0",
-    "playwright": "1.47.2"
+    "@supabase/supabase-js": "2.45.4",
+    "micro": "10.0.1",
+    "next": "14.2.5",
+    "node-fetch": "3.3.2",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "stripe": "14.22.0",
+    "uuid": "9.0.1"
+  },
+  "devDependencies": {
+    "eslint": "8.57.0",
+    "playwright": "1.45.3"
   }
 }
