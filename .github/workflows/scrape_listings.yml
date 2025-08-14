@@ -1,14 +1,14 @@
 name: Scrape listings (Pararius)
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
   schedule:
     - cron: "*/30 * * * *"  # elke 30 minuten
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repo
@@ -17,17 +17,19 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 18
-          check-latest: true   # geen cache hier -> voorkomt lockfile error
+          node-version: 20  # <-- Node 20 zodat File/FormData/Blob globaal zijn
+          cache: npm
 
       - name: Install deps
-        run: npm ci || npm i
+        run: npm ci
 
       - name: Install Playwright (browsers + dependencies)
         run: npx playwright install --with-deps chromium
 
       - name: Run scraper
         env:
-          INGEST_URL: ${{ secrets.INGEST_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          INGEST_ENDPOINT: ${{ secrets.INGEST_ENDPOINT }}
           INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
         run: npm run scrape
