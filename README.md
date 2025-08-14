@@ -43,3 +43,4 @@ create policy "Allow service role" on users for all using ( true ) with check ( 
 ## Deploy
 Upload de map naar GitHub en importeer het project in Vercel. Zet de environment variables. Deploy.
 
+ 
