@@ -18,7 +18,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 18
-          cache: npm
+          check-latest: true   # geen cache hier -> voorkomt lockfile error
 
       - name: Install deps
         run: npm ci || npm i
@@ -28,6 +28,6 @@ jobs:
 
       - name: Run scraper
         env:
-          INGEST_URL: ${{ secrets.INGEST_URL }}     # <-- LET OP: deze naam!
+          INGEST_URL: ${{ secrets.INGEST_URL }}
           INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
         run: npm run scrape
